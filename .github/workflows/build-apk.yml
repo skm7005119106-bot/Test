@@ -58,12 +58,14 @@ jobs:
           flutter build apk --release --build-number=${{ github.run_number }} $DEFINES
 
       - name: Show the signing certificate fingerprints
+        continue-on-error: true
         run: |
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
           {
             echo "### Signing certificate of this build"
             echo "Add the SHA-1 below to the Android OAuth client in Google Cloud (see SETUP.md)."
             echo '```'
-            keytool -printcert -jarfile build/app/outputs/flutter-apk/app-release.apk | grep -E "SHA1|SHA256|Owner"
+            "$APKSIGNER" verify --print-certs build/app/outputs/flutter-apk/app-release.apk | grep -E "DN:|SHA-1|SHA-256"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
