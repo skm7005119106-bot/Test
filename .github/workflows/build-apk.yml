@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Android app
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  apk:
+  android:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -25,11 +25,53 @@ jobs:
           channel: stable
           cache: true
       - run: flutter pub get
+      - run: flutter analyze
       - run: flutter test
-      # KAYRA_API is the backend address. Set it under
-      # Settings > Secrets and variables > Actions > Variables.
-      - run: flutter build apk --release --dart-define=KAYRA_API=${{ vars.KAYRA_API || 'http://10.0.2.2:8080' }}
+
+      # Signs with your upload key when the ANDROID_* secrets are set (see SETUP.md);
+      # otherwise the build uses a throwaway debug key, which Google Play will not accept.
+      - name: Set up release signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set, so this build is signed with a debug key."
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/upload-keystore.jks
+          printf 'storeFile=upload-keystore.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$KEYSTORE_PASSWORD" "${KEY_ALIAS:-upload}" "$KEYSTORE_PASSWORD" > android/key.properties
+
+      # KAYRA_API and GOOGLE_SERVER_CLIENT_ID are repository *variables*
+      # (Settings > Secrets and variables > Actions > Variables).
+      - name: Build
+        env:
+          KAYRA_API: ${{ vars.KAYRA_API }}
+          GOOGLE_SERVER_CLIENT_ID: ${{ vars.GOOGLE_SERVER_CLIENT_ID }}
+        run: |
+          if [ -z "$KAYRA_API" ]; then echo "::warning::KAYRA_API is not set: the app will not reach a server."; fi
+          if [ -z "$GOOGLE_SERVER_CLIENT_ID" ]; then echo "::warning::GOOGLE_SERVER_CLIENT_ID is not set: Google sign-in will fail."; fi
+          DEFINES="--dart-define=KAYRA_API=${KAYRA_API:-http://10.0.2.2:8080} --dart-define=GOOGLE_SERVER_CLIENT_ID=$GOOGLE_SERVER_CLIENT_ID"
+          flutter build appbundle --release --build-number=${{ github.run_number }} $DEFINES
+          flutter build apk --release --build-number=${{ github.run_number }} $DEFINES
+
+      - name: Show the signing certificate fingerprints
+        run: |
+          {
+            echo "### Signing certificate of this build"
+            echo "Add the SHA-1 below to the Android OAuth client in Google Cloud (see SETUP.md)."
+            echo '```'
+            keytool -printcert -jarfile build/app/outputs/flutter-apk/app-release.apk | grep -E "SHA1|SHA256|Owner"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/upload-artifact@v4
         with:
           name: kayra-apk
           path: app/build/app/outputs/flutter-apk/app-release.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kayra-aab-for-play-store
+          path: app/build/app/outputs/bundle/release/app-release.aab
